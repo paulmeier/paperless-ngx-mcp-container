@@ -1,0 +1,16 @@
+services:
+  paperless-ngx-mcp:
+    image: ghcr.io/paulmeier/paperless-ngx-mcp-container:latest
+    # For local development against this repo, comment out `image:` above and
+    # uncomment `build:` to build from the Dockerfile in this directory:
+    # build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      PAPERLESS_URL: ${PAPERLESS_URL:?set PAPERLESS_URL in .env}
+      PAPERLESS_API_KEY: ${PAPERLESS_API_KEY:?set PAPERLESS_API_KEY in .env}
+      PAPERLESS_PUBLIC_URL: ${PAPERLESS_PUBLIC_URL:-}
+      MCP_TRANSPORT: http
+      MCP_HTTP_PORT: 3000
+    ports:
+      - "3000:3000"

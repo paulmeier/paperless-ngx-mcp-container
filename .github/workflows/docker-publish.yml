@@ -1,0 +1,82 @@
+name: Docker publish
+
+# Builds the multi-arch image for a given upstream paperless-ngx-mcp version and
+# pushes it to ghcr.io tagged with the matching semver (X.Y.Z, X.Y, X) plus
+# `latest`. The image bundles exactly that upstream version via the
+# PAPERLESS_MCP_VERSION build arg, so the tag on GHCR always equals the upstream
+# release it contains.
+#
+# Invoked two ways:
+#   * automatically, as a reusable workflow called by upstream-sync.yml when a
+#     new upstream release is detected;
+#   * manually, via the Actions "Run workflow" button or
+#       gh workflow run docker-publish.yml --field version=0.1.6
+#     to (re)build a specific version — e.g. after a base-image/security bump.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Upstream paperless-ngx-mcp version to build (e.g. 0.1.6)'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: 'Upstream paperless-ngx-mcp version to build (e.g. 0.1.6)'
+        required: true
+        type: string
+
+jobs:
+  docker:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Produces all relevant Docker tags for, e.g., 0.1.6:
+      #   :0.1.6   :0.1   :0   :latest
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=semver,pattern={{major}},value=${{ inputs.version }}
+            type=raw,value=latest
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PAPERLESS_MCP_VERSION=${{ inputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
