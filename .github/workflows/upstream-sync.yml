@@ -1,0 +1,103 @@
+name: Upstream sync
+
+# Daily, check whether a newer paperless-ngx-mcp has been published to npm than
+# the version recorded in .upstream-ref. If so, build and push the matching
+# image (via the reusable docker-publish workflow), and only *after* a
+# successful publish record the new version and cut a GitHub Release. Ordering
+# the record last means a failed build is retried on the next run instead of
+# being silently marked as done.
+#
+# No personal access token is required: the whole flow lives in one workflow
+# run, so there is no cross-workflow trigger to work around. Everything uses the
+# built-in GITHUB_TOKEN.
+
+on:
+  schedule:
+    - cron: '17 7 * * *'  # daily 07:17 UTC
+  workflow_dispatch:
+
+jobs:
+  detect:
+    name: Detect new upstream release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.up.outputs.version }}
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve latest release from npm
+        id: up
+        run: |
+          ver=$(curl -fsSL https://registry.npmjs.org/paperless-ngx-mcp/latest | jq -r '.version')
+          if [ -z "$ver" ] || [ "$ver" = "null" ]; then
+            echo "Failed to resolve upstream version from npm" >&2
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream release: $ver"
+
+      - name: Compare against .upstream-ref
+        id: diff
+        run: |
+          current=$(tr -d '[:space:]' < .upstream-ref 2>/dev/null || echo "")
+          new="${{ steps.up.outputs.version }}"
+          if [ "$current" = "$new" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already at $current; nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream advanced: ${current:-<none>} -> $new"
+          fi
+
+  publish:
+    name: Publish image
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      version: ${{ needs.detect.outputs.version }}
+    secrets: inherit
+
+  record:
+    name: Record version and release
+    needs: [detect, publish]
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Commit .upstream-ref and cut a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW: ${{ needs.detect.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "$NEW" > .upstream-ref
+          git add .upstream-ref
+          git commit -m "chore: track paperless-ngx-mcp ${NEW}"
+          git push origin "HEAD:${BRANCH}"
+
+          if gh release view "v${NEW}" >/dev/null 2>&1; then
+            echo "Release v${NEW} already exists; skipping."
+            exit 0
+          fi
+
+          # shellcheck disable=SC2016  # backticks below are literal Markdown, not command substitution
+          notes=$(printf 'Container image bundling upstream **paperless-ngx-mcp %s**.\n\n- Image: `ghcr.io/%s:%s` (also published as `:latest`)\n- npm: https://www.npmjs.com/package/paperless-ngx-mcp/v/%s\n- Upstream release notes: https://github.com/cubinet-code/paperless-ngx-mcp/releases/tag/v%s\n' \
+            "$NEW" "$GITHUB_REPOSITORY" "$NEW" "$NEW" "$NEW")
+
+          gh release create "v${NEW}" \
+            --target "$BRANCH" \
+            --title "paperless-ngx-mcp ${NEW}" \
+            --notes "$notes"

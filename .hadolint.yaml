@@ -1,0 +1,3 @@
+ignore:
+  - DL3008  # apt: system tools (tini, ca-certificates) intentionally unpinned
+  - DL3016  # npm: the version is supplied via the PAPERLESS_MCP_VERSION build arg
